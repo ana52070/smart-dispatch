@@ -1,0 +1,14 @@
+{
+  "name": "smart-dispatch",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Codeg 多智能体分工技能：主代理规划与验收、用户指定代理执行，附带可内联的阻塞等待控制器",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test skills/smart-dispatch/tests/wait-controller.test.mjs tests/install.test.mjs",
+    "test:syntax": "node --check skills/smart-dispatch/scripts/wait-controller.js && node --check scripts/install.mjs"
+  }
+}

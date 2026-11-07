@@ -1,0 +1,39 @@
+name: test
+
+on:
+  push:
+    branches: ['main']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['22', '24']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 仓库无第三方依赖，故意不使用 cache、也不执行 npm install：
+      # 测试只依赖 Node 内置的 node:test / node:assert / node:vm / node:fs。
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Show versions
+        run: node --version && npm --version
+
+      - name: npm test
+        run: npm test
+
+      - name: Syntax check controller core
+        run: npm run test:syntax

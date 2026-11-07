@@ -1,0 +1,36 @@
+# 依赖（本仓库不安装任何第三方依赖，仅测试可能产生此目录）
+node_modules/
+
+# 日志与临时文件
+*.log
+*.tmp
+tmp/
+.tmp*/
+*.pid
+
+# 本地诊断、抓包、中继日志与原始会话数据（不随仓库分发）
+diagnostics/
+relay/
+*.jsonl
+probe-*/
+
+# 凭证与机器专属配置
+.env
+.env.*
+*.pem
+*.key
+*credential*
+*gitcredential*
+*installation_id
+.ssh/
+
+# 编辑器 / 操作系统噪音
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 测试与构建产物
+coverage/
+out/
+dist/
