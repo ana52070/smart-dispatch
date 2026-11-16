@@ -52,7 +52,10 @@ test('install all four targets inside sandbox, backing up an existing skill', as
   const expected = await readFile(path.join(root, 'skills/smart-dispatch/SKILL.md'), 'utf8')
   for (const relative of Object.values(targets)) {
     assert.equal(await readFile(path.join(base, relative, 'SKILL.md'), 'utf8'), expected)
-    assert.ok(!(await readdir(path.join(base, relative))).includes('smart-dispatch'))
+    const entries = await readdir(path.join(base, relative))
+    assert.ok(!entries.includes('smart-dispatch'))
+    assert.ok(!entries.includes('tests'), 'dev tests must not be installed')
+    assert.ok(entries.includes('references') && entries.includes('scripts'))
   }
   assert.equal(await readFile(path.join(existing, 'custom-note.txt'), 'utf8'), 'user file')
   const stamps = await readdir(path.join(base, '.smart-dispatch-backups'))

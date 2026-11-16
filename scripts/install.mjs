@@ -6,7 +6,7 @@
 // - 默认只打印计划，必须显式 --yes 才真正写入；
 // - 目标已存在时先整体备份到 ~/.smart-dispatch-backups/<时间戳>/<宿主>/，
 //   再覆盖；不删除用户其它技能；
-// - 只复制本仓库 skills/smart-dispatch 下的 5 个技能文件，不写任何配置。
+// - 只复制本仓库 skills/smart-dispatch 下的技能文件（不含 tests/），不写任何配置。
 //
 // 用法：
 //   node scripts/install.mjs list
@@ -83,9 +83,17 @@ async function exists(p) {
   }
 }
 
+// 开发用的测试不属于技能本体，不安装到宿主技能目录。
+const EXCLUDED_DIRS = new Set(['tests'])
+const isExcluded = (full) => {
+  const rel = path.relative(SOURCE, full)
+  return rel !== '' && EXCLUDED_DIRS.has(rel.split(path.sep)[0])
+}
+
 async function listSourceFiles(dir = SOURCE, base = SOURCE, out = []) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name)
+    if (isExcluded(full)) continue
     if (entry.isDirectory()) await listSourceFiles(full, base, out)
     else out.push(path.relative(base, full))
   }
@@ -143,13 +151,13 @@ async function main() {
       process.stdout.write('  已备份: ' + backup + '\n')
     }
     await mkdir(path.dirname(dest), { recursive: true })
-    await cp(SOURCE, dest, { recursive: true, force: true })
+    await cp(SOURCE, dest, { recursive: true, force: true, filter: (src) => !isExcluded(src) })
     process.stdout.write('  已安装: ' + dest + '\n')
   }
   if (args.command === 'apply') {
     process.stdout.write(
       '\n完成。技能文件就位不等于宿主已识别或已运行验证：' +
-        '请用宿主自己的技能列表/调用方式确认真实发现，并阅读 skills/smart-dispatch/references/wait-controller-compatibility.md 的边界。\n'
+        '请用宿主自己的技能列表/调用方式确认真实发现；各宿主的实测情况见 references/wait-controller-compatibility.md。\n'
     )
   }
 }

@@ -312,7 +312,7 @@ test('variable timeout durations are parsed into ms and token (600s, 1000ms, 45s
   }
 })
 
-test('normal-duration timeouts have no total retry limit and calls never overlap', async () => {
+test('normal-duration timeouts keep waiting within maxTotalMs and calls never overlap', async () => {
   const clock = makeClock()
   const steps = []
   for (let i = 0; i < 5; i++) {
@@ -680,3 +680,175 @@ test('one main waits for three parallel children in batches and removes complete
   assert.deepEqual(calls, [['A', 'B', 'C'], ['B', 'C'], ['C']])
   assert.deepEqual(pending, [])
 })
+
+// ---------------------------------------------------------------------------
+// v1.1: bounded runs ('stalled'), the pure decision core, classification
+// ---------------------------------------------------------------------------
+
+function loadContext() {
+  const context = vm.createContext({})
+  vm.runInContext(readFileSync(CONTROLLER_URL, 'utf8'), context, { filename: 'wait-controller.js' })
+  return context
+}
+
+const plain = (value) => JSON.parse(JSON.stringify(value))
+
+test('default maxTotalMs (30 min) turns endless normal timeouts into stalled', async () => {
+  const clock = makeClock()
+  const steps = []
+  for (let i = 0; i < 20; i++) steps.push({ type: 'return', value: toolError(timeoutText('300s')), advance: 300000 })
+  const h = makeHarness(steps, clock)
+  const r = await run(opts(h, clock))
+  assert.equal(r.kind, 'stalled')
+  assert.equal(r.stall_reason, 'max_total_ms')
+  assert.equal(r.wait_call_count, 6)
+  assert.equal(r.elapsed_ms, 1800000)
+  assert.deepEqual(r.remaining_task_ids, ['A'])
+  assert.equal(r.last_transport_error.error_class, 'timeout')
+  assert.ok(r.message.includes('check child progress'))
+})
+
+test('custom maxTotalMs and maxWaitCalls both bound the run', async () => {
+  const clock = makeClock()
+  const steps = Array.from({ length: 10 }, () => ({ type: 'return', value: toolError(timeoutText('60s')), advance: 60000 }))
+  let r = await run(opts(makeHarness(steps, clock), clock, ['A'], { maxTotalMs: 120000 }))
+  assert.equal(r.kind, 'stalled')
+  assert.equal(r.wait_call_count, 2)
+  const clock2 = makeClock()
+  r = await run(opts(makeHarness(steps, clock2), clock2, ['A'], { maxWaitCalls: 3, maxTotalMs: 1e12 }))
+  assert.equal(r.kind, 'stalled')
+  assert.equal(r.stall_reason, 'max_wait_calls')
+  assert.equal(r.wait_call_count, 3)
+})
+
+test('a result arriving after maxTotalMs is still delivered as actionable, never dropped', async () => {
+  const clock = makeClock()
+  const h = makeHarness([{ type: 'return', value: batch([task('A', 'completed')]), advance: 5000000 }], clock)
+  const r = await run(opts(h, clock))
+  assert.equal(r.kind, 'actionable')
+})
+
+test('fast-repeat circuit breaker takes priority over the stall bound', async () => {
+  const clock = makeClock(0)
+  const h = makeHarness([
+    { type: 'return', value: toolError(timeoutText('300s')), advance: 1 },
+    { type: 'return', value: toolError(timeoutText('300s')), advance: 1 },
+  ], clock)
+  const r = await run(opts(h, clock, ['A'], { maxTotalMs: 1 }))
+  assert.equal(r.kind, 'stalled', 'first fast timeout already crosses the 1ms bound')
+  const clock2 = makeClock(0)
+  const h2 = makeHarness([
+    { type: 'return', value: toolError(timeoutText('300s')), advance: 0 },
+    { type: 'return', value: toolError(timeoutText('300s')), advance: 0 },
+  ], clock2)
+  const r2 = await run(opts(h2, clock2, ['A'], { maxTotalMs: 1e9 }))
+  assert.equal(r2.kind, 'timeout_exhausted')
+})
+
+for (const policy of [
+  { maxTotalMs: 0 }, { maxTotalMs: -5 }, { maxTotalMs: Infinity }, { maxTotalMs: NaN }, { maxTotalMs: '100' },
+  { maxWaitCalls: 0 }, { maxWaitCalls: 1.5 }, { maxWaitCalls: Infinity },
+]) {
+  test('invalid stall bound makes no tool call: ' + JSON.stringify(policy), async () => {
+    const h = makeHarness([{ type: 'return', value: batch([task('A', 'completed')]) }], makeClock())
+    const r = await run(opts(h, makeClock(), ['A'], policy))
+    assert.equal(r.kind, 'invalid_input')
+    assert.equal(h.calls.length, 0)
+  })
+}
+
+test('direct-call mode: wcDecide drives the same semantics without callStatus', () => {
+  const ctx = loadContext()
+  const clock = makeClock()
+  const created = ctx.wcCreateWaitState({ taskIds: ['A', 'B'], now: clock.now, requireCallStatus: false })
+  assert.equal(created.result, undefined)
+  const state = created.state
+  assert.deepEqual(plain(ctx.wcNextCallArgs(state)), { task_ids: ['A', 'B'], wait_ms: 0 })
+  clock.advance(300000)
+  let d = ctx.wcDecide(state, { form: 'returned', value: toolError(multiLineTimeout), callElapsedMs: 300000 })
+  assert.equal(d.action, 'call')
+  ctx.wcNextCallArgs(state)
+  clock.advance(1000)
+  d = ctx.wcDecide(state, { form: 'returned', value: batch([task('A', 'failed'), task('B', 'running')]), callElapsedMs: 1000 })
+  assert.equal(d.action, 'return')
+  const r = plain(d.result)
+  assert.equal(r.kind, 'actionable')
+  assert.deepEqual(r.remaining_task_ids, ['B'])
+  assert.equal(r.wait_call_count, 2)
+  assert.equal(r.retry_count, 1)
+  assert.equal(r.elapsed_ms, 301000)
+})
+
+test('direct-call mode still requires callStatus unless explicitly waived', () => {
+  const ctx = loadContext()
+  assert.equal(ctx.wcCreateWaitState({ taskIds: ['A'] }).result.kind, 'invalid_input')
+})
+
+for (const [text, expected] of [
+  ['request failed: max tokens exceeded for this model', 'unknown'],
+  ['see the attached notes thereof for details', 'unknown'],
+  ['tool requires further thought', 'unknown'],
+  ['HTTP 403 Forbidden', 'authentication'],
+  ['invalid token supplied', 'authentication'],
+  ['read failed: unexpected EOF', 'disconnected'],
+  ['Error: socket hang up', 'disconnected'],
+  ['invalid params: task_ids', 'invalid_arguments'],
+]) {
+  test('error classification is word-bounded: ' + text, async () => {
+    const h = makeHarness([{ type: 'return', value: toolError(text) }], makeClock())
+    const r = await run(opts(h, makeClock()))
+    assert.equal(r.kind, 'transport_error')
+    assert.equal(r.error_class, expected)
+  })
+}
+
+test('controller, SKILL.md and package.json declare the same version', () => {
+  const ctx = loadContext()
+  const pkg = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'))
+  const skill = readFileSync(new URL('../SKILL.md', import.meta.url), 'utf8')
+  assert.equal(ctx.WC_VERSION, pkg.version)
+  assert.ok(skill.includes('版本：' + pkg.version), 'SKILL.md must state 版本：' + pkg.version)
+})
+
+// The exact idle-timeout text observed from a Claude Code main host (2026-11-16).
+const claudeIdleTimeout = (d = '1800s', suffix = true) =>
+  'MCP server "codeg-mcp" tool "get_delegation_status" sent no response or progress for ' + d + '; aborting.' +
+  (suffix ? ' If this server is configured in your MCP settings, set a per-server "timeout" (ms) to allow longer silent runs for just this server; otherwise set CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT (ms) globally (0 disables).' : '')
+
+test('Claude Code idle timeout (thrown, real text) is recovered like any canonical timeout', async () => {
+  const clock = makeClock()
+  const h = makeHarness([
+    { type: 'throw', value: new Error(claudeIdleTimeout()), advance: 1800690 },
+    { type: 'return', value: batch([task('A', 'completed')]), advance: 497000 },
+  ], clock)
+  const r = await run(opts(h, clock, ['A'], { maxTotalMs: 7200000 }))
+  assert.equal(r.kind, 'actionable')
+  assert.equal(r.retry_count, 1)
+  assert.equal(r.last_transport_error.duration_token, '1800s')
+  assert.equal(r.last_transport_error.timeout_ms, 1800000)
+})
+
+test('with default 30-min window one Claude Code idle timeout means one stall checkpoint', async () => {
+  const clock = makeClock()
+  const h = makeHarness([{ type: 'return', value: toolError(claudeIdleTimeout('1800s', false)), advance: 1800690 }], clock)
+  const r = await run(opts(h, clock))
+  assert.equal(r.kind, 'stalled')
+  assert.equal(r.wait_call_count, 1)
+})
+
+for (const message of [
+  claudeIdleTimeout() + ' extra',
+  'Error: ' + claudeIdleTimeout(),
+  claudeIdleTimeout().replace('get_delegation_status', 'delegate_to_agent'),
+  claudeIdleTimeout('0s'),
+]) {
+  test('noncanonical Claude Code idle timeout does not retry: ' + message.slice(0, 60), async () => {
+    const h = makeHarness([
+      { type: 'return', value: toolError(message), advance: 1800000 },
+      { type: 'return', value: batch([task('A', 'completed')]) },
+    ], makeClock())
+    const r = await run(opts(h, makeClock()))
+    assert.equal(r.kind, 'transport_error')
+    assert.equal(h.calls.length, 1)
+  })
+}
