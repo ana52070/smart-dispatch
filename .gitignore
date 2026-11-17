@@ -34,3 +34,15 @@ Thumbs.db
 coverage/
 out/
 dist/
+# eval: generated tasks and local run state
+eval/tasks/E1-migrate/
+eval/tasks/E2-pipeline/
+eval/ref/E1/
+eval/ref/E2/
+eval/hidden/E1.test.mjs
+eval/hidden/E2.test.mjs
+eval/runs/
+eval/notes/
+eval/briefs/
+eval/skills/
+eval/sessions.json

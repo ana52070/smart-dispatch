@@ -1,4 +1,4 @@
-// wait-controller.js — smart-dispatch wait controller (version 1.1.0)
+// wait-controller.js — smart-dispatch wait controller (version 1.3.0)
 //
 // Pure, dependency-free and host-neutral. No import / require / fs / process.
 //
@@ -24,7 +24,7 @@
 // optionally maxWaitCalls; reaching a bound returns kind 'stalled' so the main
 // agent can check child progress instead of waiting forever.
 
-var WC_VERSION = '1.1.0';
+var WC_VERSION = '1.3.0';
 var WC_DEFAULTS = { maxFastRepeats: 2, fastRatio: 0.5, maxTotalMs: 1800000, maxWaitCalls: null };
 var WC_STATUSES = ['running', 'completed', 'failed', 'canceled', 'unknown'];
 var WC_BLOCKED_KINDS = ['permission', 'question', 'plan_approval'];
